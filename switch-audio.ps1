@@ -18,15 +18,56 @@ if ($devices.Count -eq 0) {
     exit
 }
 
-# Load current index
+# Detect current default audio output device using nircmd
+$currentDevice = (& $nircmd showsounddevices) |
+    Select-String "Default" -Context 0,1 |
+    ForEach-Object {
+        $_.Context.PostContext |
+        Select-String "Name" |
+        ForEach-Object { $_.ToString().Split(":")[1].Trim() }
+    }
+
+if (-not $currentDevice) {
+    Write-Error "Unable to detect current audio device."
+    exit
+}
+
+Write-Host "Detected current device: $currentDevice" -ForegroundColor Yellow
+
+# Load saved index
 if (Test-Path $stateFile) {
-    $currentIndex = [int](Get-Content $stateFile)
+    $savedIndex = [int](Get-Content $stateFile)
 } else {
-    $currentIndex = 0
+    $savedIndex = 0
+}
+
+# Validate saved index
+if ($savedIndex -ge $devices.Count -or $savedIndex -lt 0) {
+    Write-Host "Saved index is invalid. Resetting to 0." -ForegroundColor Red
+    $savedIndex = 0
+}
+
+$savedDevice = $devices[$savedIndex]
+
+Write-Host "Saved device from current_device.txt: $savedDevice" -ForegroundColor Yellow
+
+# Compare detected device with saved device
+if ($currentDevice -ne $savedDevice) {
+    Write-Host "Mismatch detected — correcting index..." -ForegroundColor Red
+
+    # Find actual index
+    $actualIndex = $devices.IndexOf($currentDevice)
+
+    if ($actualIndex -ge 0) {
+        $savedIndex = $actualIndex
+        Write-Host "Corrected index to $savedIndex ($currentDevice)" -ForegroundColor Green
+    } else {
+        Write-Host "Current device not found in devices.txt. Cannot correct index." -ForegroundColor Red
+    }
 }
 
 # Compute next index
-$nextIndex = ($currentIndex + 1) % $devices.Count
+$nextIndex = ($savedIndex + 1) % $devices.Count
 $nextDevice = $devices[$nextIndex]
 
 Write-Host "Switching audio output to: $nextDevice" -ForegroundColor Cyan

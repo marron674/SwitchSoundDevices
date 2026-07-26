@@ -1,3 +1,2 @@
-# Device files
-current_device.txt
-devices.txt
+# Config files
+*.txt

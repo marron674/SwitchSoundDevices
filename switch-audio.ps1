@@ -1,41 +1,47 @@
-# Path to nircmd
-$nircmd = "C:\nircmd64\nircmd.exe"
-
-# Config files
-$deviceListFile = ".\devices.txt"
+# Optional state file (keeps last-chosen index between runs)
 $stateFile = ".\current_device.txt"
 
-# Load device list
-if (-not (Test-Path $deviceListFile)) {
-    Write-Error "Device list file not found: $deviceListFile"
-    exit
+# Get playback devices (sorted by Index)
+$playbacks = Get-AudioDevice -List | Where-Object { $_.Type -eq 'Playback' } | Sort-Object Index
+
+if ($playbacks.Count -lt 1) {
+    Write-Error "No playback devices found."
+    exit 1
 }
 
-$devices = Get-Content $deviceListFile | Where-Object { $_.Trim() -ne "" }
+# Show available playback devices
+$playbacks | Format-Table Index,Name,Default -AutoSize
 
-if ($devices.Count -eq 0) {
-    Write-Error "Device list is empty."
-    exit
-}
+# Detect current default playback device (object)
+$current = $playbacks | Where-Object { $_.Default -eq $true }
 
-# Load current index
-if (Test-Path $stateFile) {
-    $currentIndex = [int](Get-Content $stateFile)
+if (-not $current) {
+    Write-Host "No default playback device detected. Using first device in list." -ForegroundColor Yellow
+    $currentIndexValue = $playbacks[0].Index
 } else {
-    $currentIndex = 0
+    $currentIndexValue = $current.Index
+    Write-Host "Detected default device: $($current.Name) (Index $currentIndexValue)" -ForegroundColor Cyan
 }
 
-# Compute next index
-$nextIndex = ($currentIndex + 1) % $devices.Count
-$nextDevice = $devices[$nextIndex]
+# Build array of Index values (preserves device ordering)
+$indices = $playbacks | Select-Object -ExpandProperty Index
 
-Write-Host "Switching audio output to: $nextDevice" -ForegroundColor Cyan
+# Find position of current index in indices array
+$pos = [array]::IndexOf($indices, $currentIndexValue)
+if ($pos -lt 0) { $pos = 0 }
 
-# Run nircmd to set default device
-& $nircmd setdefaultsounddevice "$nextDevice" 1
-& $nircmd setdefaultsounddevice "$nextDevice" 2
+# Compute next position and corresponding Index value
+$nextPos = ($pos + 1) % $indices.Count
+$nextIndexValue = $indices[$nextPos]
 
-# Save new index
-$nextIndex | Out-File $stateFile -Encoding ascii
+# Show next device
+$nextDevice = ($playbacks | Where-Object { $_.Index -eq $nextIndexValue }).Name
+Write-Host "Switching default playback to: $nextDevice (Index $nextIndexValue)" -ForegroundColor Green
+
+# Set default by Index (use -DefaultOnly if you want only default role)
+Set-AudioDevice -Index $nextIndexValue
+
+# Save state (optional)
+$nextIndexValue | Out-File $stateFile -Encoding ascii
 
 Write-Host "Done."

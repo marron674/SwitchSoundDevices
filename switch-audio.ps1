@@ -1,138 +1,138 @@
-# switch-audio-rotation.ps1
-# Requires: AudioDeviceCmdlets module (Get-AudioDevice, Set-AudioDevice)
+# switch-audio-rotation-robust.ps1
+# Requires AudioDeviceCmdlets module (Get-AudioDevice, Set-AudioDevice); commented out since it is already installed
 
-Import-Module AudioDeviceCmdlets -ErrorAction Stop
+# Import-Module AudioDeviceCmdlets -ErrorAction Stop
 
-# Files (in script folder)
-$scriptDir        = Split-Path -Parent $MyInvocation.MyCommand.Path
-$deviceListFile   = Join-Path $scriptDir 'devices.txt'          # editable rotation list
-$masterListFile   = Join-Path $scriptDir 'devices_master.txt'   # auto-generated full list
-$stateFile        = Join-Path $scriptDir 'current_device.txt'   # detailed current device info
-$indexStateFile   = Join-Path $scriptDir 'current_index.txt'    # saved rotation index (int)
+$scriptDir      = Split-Path -Parent $MyInvocation.MyCommand.Path
+$masterFile     = Join-Path $scriptDir 'devices_master.txt'
+$editableFile   = Join-Path $scriptDir 'devices.txt'
+$currentFile    = Join-Path $scriptDir 'current_device.txt'
+$indexStateFile = Join-Path $scriptDir 'current_index.txt'
 
-# --- Helper: export full playback device list to master file (one exact name per line)
-function Export-MasterDeviceList {
-    $playbacks = Get-AudioDevice -List | Where-Object { $_.Type -eq 'Playback' } | Sort-Object Index
-    $playbacks | ForEach-Object { $_.Name } | Out-File -FilePath $masterListFile -Encoding utf8
-    return $playbacks
-}
+# --- Gather current playback devices
+$playbacks = Get-AudioDevice -List | Where-Object { $_.Type -eq 'Playback' } | Sort-Object Index
 
-# --- Ensure master list exists (auto-generate if missing)
-if (-not (Test-Path $masterListFile)) {
-    Write-Host "Generating master device list: $masterListFile" -ForegroundColor Yellow
-    $allPlaybacks = Export-MasterDeviceList
-} else {
-    # still load current playback objects for detection
-    $allPlaybacks = Get-AudioDevice -List | Where-Object { $_.Type -eq 'Playback' } | Sort-Object Index
-}
-
-# --- If devices.txt missing, create it from master (user can edit to exclude devices)
-if (-not (Test-Path $deviceListFile)) {
-    Write-Host "Creating devices.txt from master list. Edit devices.txt to exclude devices you don't want in rotation." -ForegroundColor Yellow
-    $allPlaybacks | ForEach-Object { $_.Name } | Out-File -FilePath $deviceListFile -Encoding utf8
-}
-
-# --- Load rotation list (exact names)
-$devices = Get-Content $deviceListFile | Where-Object { $_.Trim() -ne "" }
-
-if ($devices.Count -eq 0) {
-    Write-Error "devices.txt is empty. Populate it with exact playback device names (one per line)."
+if ($playbacks.Count -eq 0) {
+    Write-Error "No playback devices found."
     exit 1
 }
 
-# --- Detect current default playback device (object)
-$playbacks = $allPlaybacks
-$currentObj = $playbacks | Where-Object { $_.Default -eq $true }
+# --- Export master list (Index | Name | ID | Type | Default)
+$playbacks | ForEach-Object {
+    "{0} | {1} | {2} | {3} | {4}" -f $_.Index, $_.Name, $_.ID, $_.Type, $_.Default
+} | Out-File -FilePath $masterFile -Encoding utf8
 
-# Write detailed current_device.txt for auditing
+Write-Host "Wrote master device list to $masterFile" -ForegroundColor Cyan
+
+# --- Create editable devices.txt from master if missing
+if (-not (Test-Path $editableFile)) {
+    $playbacks | ForEach-Object { $_.Name } | Out-File -FilePath $editableFile -Encoding utf8
+    Write-Host "Created $editableFile (edit to exclude devices you don't want in rotation)" -ForegroundColor Yellow
+}
+
+# --- Read editable list and normalize entries
+$rawEntries = Get-Content $editableFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+
+# Helper: resolve an entry to a playback object (prefer ID, then exact Name, then Index)
+function Resolve-EntryToPlayback($entry, $playbacks) {
+    # ID: <guid>
+    if ($entry -match '^\s*ID\s*:\s*(\{?.+\}?)\s*$') {
+        $id = $matches[1].Trim()
+        return $playbacks | Where-Object { $_.ID -eq $id } | Select-Object -First 1
+    }
+    # Index: <number>
+    if ($entry -match '^\s*Index\s*[:=]\s*(\d+)\s*$') {
+        $idx = [int]$matches[1]
+        return $playbacks | Where-Object { $_.Index -eq $idx } | Select-Object -First 1
+    }
+    # If entry contains " | " (master format), try to parse Name from it (second field)
+    if ($entry -match '^\s*\d+\s*\|\s*(.+?)\s*\|') {
+        $name = $matches[1].Trim()
+        $found = $playbacks | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if ($found) { return $found }
+    }
+    # Otherwise treat as exact Name
+    return $playbacks | Where-Object { $_.Name -eq $entry } | Select-Object -First 1
+}
+
+# --- Build rotation list of playback objects (resolved)
+$rotation = @()
+foreach ($entry in $rawEntries) {
+    $resolved = Resolve-EntryToPlayback -entry $entry -playbacks $playbacks
+    if ($null -ne $resolved) {
+        $rotation += $resolved
+    } else {
+        Write-Host "Warning: entry not found or not present now: '$entry' (skipping)" -ForegroundColor Yellow
+    }
+}
+
+if ($rotation.Count -eq 0) {
+    Write-Error "No valid devices found in devices.txt after resolving against current system devices."
+    exit 1
+}
+
+# --- Write detailed current_device.txt (human readable)
+$currentObj = $playbacks | Where-Object { $_.Default -eq $true } | Select-Object -First 1
 $timestamp = (Get-Date).ToString("o")
 if ($currentObj) {
-    $currentInfo = @{
-        Timestamp = $timestamp
-        Name      = $currentObj.Name
-        Index     = $currentObj.Index
-        ID        = $currentObj.ID
-        Type      = $currentObj.Type
-        Default   = $currentObj.Default
-    }
+    $lines = @(
+        "Timestamp: $timestamp"
+        "Name: $($currentObj.Name)"
+        "Index: $($currentObj.Index)"
+        "ID: $($currentObj.ID)"
+        "Type: $($currentObj.Type)"
+        "Default: $($currentObj.Default)"
+    )
 } else {
-    $currentInfo = @{
-        Timestamp = $timestamp
-        Name      = "<none detected>"
-        Index     = -1
-        ID        = ""
-        Type      = "Playback"
-        Default   = $false
-    }
+    $lines = @(
+        "Timestamp: $timestamp"
+        "Name: <none detected>"
+        "Index: -1"
+        "ID: "
+        "Type: Playback"
+        "Default: False"
+    )
 }
-# Save human-readable and machine-friendly info
-$currentInfo.GetEnumerator() | ForEach-Object { "{0}: {1}" -f $_.Key, $_.Value } | Out-File -FilePath $stateFile -Encoding utf8
+$lines | Out-File -FilePath $currentFile -Encoding utf8
+Write-Host "Wrote current device info to $currentFile" -ForegroundColor Cyan
 
-Write-Host "Wrote current device info to $stateFile" -ForegroundColor Cyan
-Write-Host "Detected current device: $($currentInfo.Name)" -ForegroundColor Yellow
-
-# --- Load saved rotation index (if present)
+# --- Load saved rotation index (index into $rotation array)
 if (Test-Path $indexStateFile) {
-    try {
-        $savedIndex = [int](Get-Content $indexStateFile -ErrorAction Stop)
-    } catch {
-        $savedIndex = 0
-    }
-} else {
-    $savedIndex = 0
-}
+    try { $savedIndex = [int](Get-Content $indexStateFile) } catch { $savedIndex = 0 }
+} else { $savedIndex = 0 }
+if ($savedIndex -lt 0 -or $savedIndex -ge $rotation.Count) { $savedIndex = 0 }
 
-if ($savedIndex -lt 0 -or $savedIndex -ge $devices.Count) { $savedIndex = 0 }
-
-# --- If system default changed outside script, correct savedIndex if possible
-if ($currentInfo.Name -ne "<none detected>") {
-    $foundInRotation = $devices.IndexOf($currentInfo.Name)
-    if ($foundInRotation -ge 0) {
-        # align savedIndex to the detected device
-        $savedIndex = $foundInRotation
-        Write-Host "Detected device is in rotation list; corrected saved index to $savedIndex" -ForegroundColor Green
+# --- If system default changed outside script and is in rotation, align savedIndex
+if ($currentObj) {
+    $foundPos = [array]::IndexOf($rotation, ($rotation | Where-Object { $_.ID -eq $currentObj.ID } | Select-Object -First 1))
+    if ($foundPos -ge 0) {
+        $savedIndex = $foundPos
+        Write-Host "Detected system default is in rotation; aligning saved index to $savedIndex" -ForegroundColor Green
     } else {
-        # Detected device not in rotation list: record it (already in current_device.txt) and leave savedIndex unchanged.
-        Write-Host "Detected device is NOT in rotation list; leaving rotation index unchanged." -ForegroundColor Yellow
+        Write-Host "Detected system default not in rotation; continuing with saved index $savedIndex" -ForegroundColor Yellow
     }
-} else {
-    Write-Host "No default playback device detected; using saved index." -ForegroundColor Yellow
 }
 
-# --- Compute next index and device from rotation list
-$nextIndex = ($savedIndex + 1) % $devices.Count
-$nextDevice = $devices[$nextIndex]
+# --- Compute next device in rotation
+$nextIndex = ($savedIndex + 1) % $rotation.Count
+$target = $rotation[$nextIndex]
+Write-Host "Switching to: $($target.Name) (Index $($target.Index))" -ForegroundColor Cyan
 
-Write-Host "Switching default playback to: $nextDevice (rotation index $nextIndex)" -ForegroundColor Cyan
-
-# --- Attempt to set default by matching Index or Name
-# Prefer Set-AudioDevice -Index if the device exists in current playbacks; otherwise use -ID or -InputObject
-$targetPlayback = $playbacks | Where-Object { $_.Name -eq $nextDevice } | Select-Object -First 1
-
-if ($null -ne $targetPlayback) {
-    # Use Index (module supports -Index)
+# --- Attempt to set default (prefer Index, fallback to ID)
+try {
+    Set-AudioDevice -Index $target.Index -ErrorAction Stop
+    Write-Host "Set default by Index: $($target.Index)" -ForegroundColor Green
+} catch {
     try {
-        Set-AudioDevice -Index $targetPlayback.Index -ErrorAction Stop
-        Write-Host "Set default by Index: $($targetPlayback.Index)" -ForegroundColor Green
+        Set-AudioDevice -ID $target.ID -ErrorAction Stop
+        Write-Host "Set default by ID: $($target.ID)" -ForegroundColor Green
     } catch {
-        # fallback to ID
-        try {
-            Set-AudioDevice -ID $targetPlayback.ID -ErrorAction Stop
-            Write-Host "Set default by ID: $($targetPlayback.ID)" -ForegroundColor Green
-        } catch {
-            Write-Error "Failed to set default device by Index or ID: $($_.Exception.Message)"
-            exit 1
-        }
+        Write-Error "Failed to set default device: $($_.Exception.Message)"
+        exit 1
     }
-} else {
-    # Device name from devices.txt not found among current playbacks (maybe unplugged or renamed)
-    Write-Host "Target device '$nextDevice' not present in current playback list. Skipping switch." -ForegroundColor Red
-    # Optionally: you could choose the first available playback device instead:
-    # $fallback = $playbacks[0]; Set-AudioDevice -Index $fallback.Index
 }
 
 # --- Save new rotation index
 $nextIndex | Out-File -FilePath $indexStateFile -Encoding ascii
-
-Write-Host "Saved rotation index to $indexStateFile" -ForegroundColor Cyan
+Write-Host "Saved rotation index ($nextIndex) to $indexStateFile" -ForegroundColor Cyan
 Write-Host "Done."

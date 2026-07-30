@@ -8,6 +8,15 @@ $masterFile     = Join-Path $scriptDir 'devices_master.txt'
 $editableFile   = Join-Path $scriptDir 'devices.txt'
 $currentFile    = Join-Path $scriptDir 'current_device.txt'
 $indexStateFile = Join-Path $scriptDir 'current_index.txt'
+$debugMode      = $false
+
+function Write-DebugMessage {
+    param([string]$Message)
+
+    if ($debugMode) {
+        Write-Host "DEBUG: $Message" -ForegroundColor DarkGray
+    }
+}
 
 # --- Gather current playback devices
 $playbacks = Get-AudioDevice -List | Where-Object { $_.Type -eq 'Playback' } | Sort-Object Index
@@ -22,7 +31,7 @@ $playbacks | ForEach-Object {
     "{0} | {1} | {2} | {3} | {4}" -f $_.Index, $_.Name, $_.ID, $_.Type, $_.Default
 } | Out-File -FilePath $masterFile -Encoding utf8
 
-Write-Host "Wrote master device list to $masterFile" -ForegroundColor Cyan
+Write-DebugMessage "Wrote master device list to $masterFile"
 
 # --- Create editable devices.txt from master if missing
 if (-not (Test-Path $editableFile)) {
@@ -94,7 +103,7 @@ if ($currentObj) {
     )
 }
 $lines | Out-File -FilePath $currentFile -Encoding utf8
-Write-Host "Wrote current device info to $currentFile" -ForegroundColor Cyan
+Write-DebugMessage "Wrote current device info to $currentFile"
 
 # --- Load saved rotation index (index into $rotation array)
 if (Test-Path $indexStateFile) {
@@ -107,25 +116,25 @@ if ($currentObj) {
     $foundPos = [array]::IndexOf($rotation, ($rotation | Where-Object { $_.ID -eq $currentObj.ID } | Select-Object -First 1))
     if ($foundPos -ge 0) {
         $savedIndex = $foundPos
-        Write-Host "Detected system default is in rotation; aligning saved index to $savedIndex" -ForegroundColor Green
+        Write-DebugMessage "Detected system default is in rotation; aligning saved index to $savedIndex"
     } else {
-        Write-Host "Detected system default not in rotation; continuing with saved index $savedIndex" -ForegroundColor Yellow
+        Write-DebugMessage "Detected system default not in rotation; continuing with saved index $savedIndex"
     }
 }
 
 # --- Compute next device in rotation
 $nextIndex = ($savedIndex + 1) % $rotation.Count
 $target = $rotation[$nextIndex]
-Write-Host "Switching to: $($target.Name) (Index $($target.Index))" -ForegroundColor Cyan
+Write-Host "`nSwitching to: $($target.Name) (Index $($target.Index))`n" -ForegroundColor Cyan
 
 # --- Attempt to set default (prefer Index, fallback to ID)
 try {
-    Set-AudioDevice -Index $target.Index -ErrorAction Stop
-    Write-Host "Set default by Index: $($target.Index)" -ForegroundColor Green
+    Set-AudioDevice -Index $target.Index -ErrorAction Stop | Out-Null
+    Write-DebugMessage "Set default by Index: $($target.Index)"
 } catch {
     try {
         Set-AudioDevice -ID $target.ID -ErrorAction Stop
-        Write-Host "Set default by ID: $($target.ID)" -ForegroundColor Green
+        Write-DebugMessage "Set default by ID: $($target.ID)"
     } catch {
         Write-Error "Failed to set default device: $($_.Exception.Message)"
         exit 1
@@ -134,5 +143,8 @@ try {
 
 # --- Save new rotation index
 $nextIndex | Out-File -FilePath $indexStateFile -Encoding ascii
-Write-Host "Saved rotation index ($nextIndex) to $indexStateFile" -ForegroundColor Cyan
-Write-Host "Done."
+Write-DebugMessage "Saved rotation index ($nextIndex) to $indexStateFile"
+Write-DebugMessage "Done."
+
+# --- Pause 3 seconds before closing window
+Start-Sleep -Seconds 3

@@ -3,6 +3,11 @@
 
 # Import-Module AudioDeviceCmdlets -ErrorAction Stop
 
+param(
+    [Alias("s")]
+    [int]$SleepSeconds = 0
+)
+
 $scriptDir      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $masterFile     = Join-Path $scriptDir 'devices_master.txt'
 $editableFile   = Join-Path $scriptDir 'devices.txt'
@@ -147,4 +152,6 @@ Write-DebugMessage "Saved rotation index ($nextIndex) to $indexStateFile"
 Write-DebugMessage "Done."
 
 # --- Pause 3 seconds before closing window
-Start-Sleep -Seconds 3
+if ($SleepSeconds -gt 0) {
+    Start-Sleep -Seconds $SleepSeconds
+}
